@@ -33,6 +33,18 @@ jwt.authorize(function (err, tokens) {
 });
 sheets_config.auth = jwt;
 
+// clear
+sheets_config.sheets.spreadsheets.values.clear({
+    auth: sheets_config.auth,
+    spreadsheetId: sheets_config.spreadsheet_id,
+    range: 'maturity!G2:M'
+}, function (err, response) {
+   if (err) {
+       console.log('The API returned an error cleaning cells: ' + err);
+   } else {
+       console.log('Cells cleaned');
+   }
+});
 
 // reading landings
 sheets_config.sheets.spreadsheets.values.get({
@@ -47,11 +59,11 @@ sheets_config.sheets.spreadsheets.values.get({
        for (var i in response.data.values) {
             console.log(response.data.values[i][0]);
             lps[response.data.values[i][0]] = {
-                row: parseInt(i)+1,
+                row: parseInt(i)+2,
                 endpoint: response.data.values[i][0],
                 gtms: response.data.values[i][1].split(','),
                 uas: response.data.values[i][2].split(','),
-                data_layer: response.data.values[i][3],
+                data_layers: response.data.values[i][3].split(','),
                 keys: response.data.values[i][4].split(',')
             };
        }
