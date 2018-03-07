@@ -118,7 +118,7 @@ methods.check_gtm_position = function(lp, pg_html) {
         if (pg_gtm > pg_html.indexOf('<body')) {
             to_s = Math.abs(pg_html.indexOf('<body') - pg_gtm);
             to_e = pg_html.indexOf('</body') - pg_gtm;
-            if (to_e > to_s) {
+            if (to_s > to_e) {
                 prop[lp.endpoint].gtm_position = 'body bottom';
             } else {
                 prop[lp.endpoint].gtm_position = 'body init';
