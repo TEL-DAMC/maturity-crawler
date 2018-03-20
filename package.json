@@ -1,0 +1,8 @@
+{
+  "name": "maturity-crawler",
+  "version": "0.0.1",
+  "dependencies": {
+    "googleapis": "^27.0.0",
+    "puppeteer": "^1.2.0"
+  }
+}
