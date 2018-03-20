@@ -1,5 +1,6 @@
 .DS_Store
 .Rhistory
-package-lock.json
 node_modules/
 key.json
+.idea/
+.idea/inspectionProfiles/Project_Default.xml
