@@ -1,6 +1,3 @@
-.DS_Store
-.Rhistory
 node_modules/
 key.json
 .idea/
-.idea/inspectionProfiles/Project_Default.xml

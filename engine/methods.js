@@ -9,30 +9,20 @@ const methods = {}
 
 let globalBrowserInstance
 
-// get parameter name
-methods.getUrlParamValueFromName = function (url, name) {
-  name = name.replace(/[\[\]]/g, '\\$&')
-  let regex = new RegExp('[?&]' + name + '(=([^&#]*)|&|#|$)')
-  let results = regex.exec(url)
-  if (!results) return null
-  if (!results[2]) return ''
-  return decodeURIComponent(results[2].replace(/\+/g, ' '))
-}
-
-// fetch pages
-methods.checkLandingPages = async function (landingPages, googleSheetsConfig) {
+// asyncFetchAndCheck pages
+methods.asyncCheckLandingPages = async function (landingPages, googleSheetsConfig) {
   globalBrowserInstance = await puppeteer.launch({headless: false})
   let currentlyRunning = 0
-  ;(async function loop (i) {
+  ;(async function asyncLoop (i) {
     if (currentlyRunning < 8) {
       currentlyRunning++
-      methods.fetch(landingPages[i], googleSheetsConfig).catch(e => console.warn('fetch error:', landingPages[i], e))
+      methods.asyncFetchAndCheck(landingPages[i], googleSheetsConfig).catch(e => console.warn('asyncFetchAndCheck error:', landingPages[i], e))
     } else {
-      await methods.fetch(landingPages[i], googleSheetsConfig).catch(e => console.warn('fetch error:', landingPages[i], e))
+      await methods.asyncFetchAndCheck(landingPages[i], googleSheetsConfig).catch(e => console.warn('asyncFetchAndCheck error:', landingPages[i], e))
       currentlyRunning = (await globalBrowserInstance.pages()).length
     }
     i++
-    await loop(i)
+    await asyncLoop(i)
   })(0)
 
   for (let i in landingPages) {
@@ -52,7 +42,7 @@ methods.checkLandingPages = async function (landingPages, googleSheetsConfig) {
   }
 }
 
-methods.fetch = async function (lp, sc) {
+methods.asyncFetchAndCheck = async function (lp, spreadsheet) {
   // open browser
   const chromeBrowserInstance = globalBrowserInstance
 
@@ -73,18 +63,18 @@ methods.fetch = async function (lp, sc) {
         pageTestResults[lp.endpoint].gtms.push(gtmInfo.gtmId)
         pageTestResults[lp.endpoint].data_layers.push(gtmInfo.dataLayerObjectName)
       } else if (url.indexOf('/collect') > -1 && this.getUrlParamValueFromName(url, 't') === 'pageview') {
-        pageTestResults[lp.endpoint].uas.push(this.getUaTid(url))
+        pageTestResults[lp.endpoint].uas.push(this.getGoogleAnalyticsTrackingId(url))
       }
     }
   })
 
   // handling error
   chomeTab.on('error', msg => {
-    console.warn('browser error', lp.endpoint)
+    console.warn('browser error', lp.endpoint, msg)
   })
 
   chomeTab.on('pageerror', msg => {
-    console.warn('page js error', lp.endpoint)
+    console.warn('page js error', lp.endpoint, msg)
   })
 
   console.log('endpoint:', lp.endpoint)
@@ -99,43 +89,53 @@ methods.fetch = async function (lp, sc) {
   pageTestResults[lp.endpoint].gtm_position = methods.checkGtmPositionStatus(PageHTML)
 
   console.log(pageTestResults[lp.endpoint].data_layers)
-  const PageDataLayer = await methods.getDataLayerObject(chomeTab, pageTestResults[lp.endpoint].data_layers[0])
+  const PageDataLayer = await methods.asyncGetDataLayerObject(chomeTab, pageTestResults[lp.endpoint].data_layers[0])
 
-  methods.checkObjectKeys(lp, JSON.stringify(PageDataLayer))
+  pageTestResults[lp.endpoint].keys_log.concat(methods.filterDataLayerObjectKeysFound(lp, JSON.stringify(PageDataLayer)))
+  pageTestResults[lp.endpoint].checkGtmIds = methods.checkGtmIds(lp)
+  pageTestResults[lp.endpoint].uas_ok = methods.checkGoogleAnalyticsTackingIds(lp)
+  pageTestResults[lp.endpoint].checkDataLayerIds = methods.checkDataLayerIds(lp)
 
   if ((await chromeBrowserInstance.pages()).length > 2) await chomeTab.close()
 
-  pageTestResults[lp.endpoint].gtms_ok = methods.gtms_ok(lp)
-  methods.uas_ok(lp)
-  methods.dataLayersOk(lp)
-
-  methods.writeSpreadsheet(lp, sc)
+  methods.asyncWriteSpreadsheet(lp, spreadsheet)
 }
 
-methods.getDataLayerObject = async function (chromeTab, dataLayerName) {
+// get parameter name
+methods.getUrlParamValueFromName = function (url, name) {
+  name = name.replace(/[[\]]/g, '\\$&')
+  let regex = new RegExp('[?&]' + name + '(=([^&#]*)|&|#|$)')
+  let results = regex.exec(url)
+  if (!results) return null
+  if (!results[2]) return ''
+  return decodeURIComponent(results[2].replace(/\+/g, ' '))
+}
+
+methods.asyncGetDataLayerObject = async function (chromeTab, dataLayerName) {
   return chromeTab.evaluate((GtmDataLayerName) => {
     return window[GtmDataLayerName]
   }, dataLayerName)
 }
+
 /**
  * Returns GTM's dataLayer name and id from its url
- * @param url GTM js URL
+ * @param gtmUrl GTM js URL
  * @returns {{dataLayerObjectName: string, gtmId: string}}
  */
-methods.getGtmInfoFromUrl = function (url) {
+methods.getGtmInfoFromUrl = function (gtmUrl) {
   return {
-    dataLayerObjectName: methods.getUrlParamValueFromName(url, 'l'),
-    gtmId: methods.getUrlParamValueFromName(url, 'id')
+    dataLayerObjectName: methods.getUrlParamValueFromName(gtmUrl, 'l'),
+    gtmId: methods.getUrlParamValueFromName(gtmUrl, 'id')
   }
 }
 
 /**
  * Returns Google Analytics Tracking ID from the url
- * @param url
+ * @param ganalyticsUrl
  * @returns {string} Tracking Id
  */
-methods.getUaTid = function (url) {
-  return this.getUrlParamValueFromName(url, 'tid')
+methods.getGoogleAnalyticsTrackingId = function (ganalyticsUrl) {
+  return this.getUrlParamValueFromName(ganalyticsUrl, 'tid')
 }
 
 methods.checkGtmPositionStatus = function (pageHtml) {
@@ -143,7 +143,7 @@ methods.checkGtmPositionStatus = function (pageHtml) {
 
   const gtmPositionIndexOnPage = pageHtml.indexOf('gtm.js?') // TODO: Check more than one GTM on the same page
 
-  if (gtmPositionIndexOnPage <= -1) {
+  if (gtmPositionIndexOnPage === -1) {
     gtmPositionStatus = 'not found'
   } else if (gtmPositionIndexOnPage < pageHtml.indexOf('</head')) {
     gtmPositionStatus = 'header'
@@ -159,52 +159,54 @@ methods.checkGtmPositionStatus = function (pageHtml) {
   return gtmPositionStatus
 }
 
-methods.gtms_ok = function (lp) {
+methods.checkGtmIds = function (lp) {
   // check gtms
   return lp.gtms.sort().join(',') === pageTestResults[lp.endpoint].gtms.sort().join(',')
 }
 
-methods.uas_ok = function (lp) {
+methods.checkGoogleAnalyticsTackingIds = function (lp) {
   // check uas
-  pageTestResults[lp.endpoint].uas_ok = lp.uas.sort().join(',') === pageTestResults[lp.endpoint].uas.sort().join(',')
+  return lp.uas.sort().join(',') === pageTestResults[lp.endpoint].uas.sort().join(',')
 }
 
-methods.dataLayersOk = function (lp) {
-  // check data_layers
-  pageTestResults[lp.endpoint].dataLayersOk = lp.data_layers.sort().join(',') === pageTestResults[lp.endpoint].data_layers.sort().join(',')
+methods.checkDataLayerIds = function (lp) {
+  // check expected data_layers vs what was found
+  return lp.data_layers.sort().join(',') === pageTestResults[lp.endpoint].data_layers.sort().join(',')
 }
 
-methods.checkObjectKeys = function (lp, json) {
-  for (let key of lp.keys) {
-    if (json.indexOf(key) < 0) { // todo: dangerous implementation of key check on stringified JSON
-      pageTestResults[lp.endpoint].keys_log.push(key)
-    }
-  }
+methods.filterDataLayerObjectKeysFound = function (lp, json) {
+  if (!json) return []
+  // todo: dangerous implementation of key check on stringified JSON
+  return lp.keys.filter(key => json.indexOf(key) < 0)
 }
 
-methods.writeSpreadsheet = function (lp, sc) {
-  sc.sheets.spreadsheets.values.append({
-    auth: sc.auth,
-    spreadsheetId: sc.spreadsheetId,
-    range: 'maturity!G' + lp.row.toString() + ':M' + lp.row.toString(),
-    valueInputOption: 'USER_ENTERED',
-    resource: {
-      values: [[
-        pageTestResults[lp.endpoint].gtms.join(','), // G
-        pageTestResults[lp.endpoint].gtm_position, // H
-        pageTestResults[lp.endpoint].gtms_ok, // I
-        pageTestResults[lp.endpoint].uas.join(','), // J
-        pageTestResults[lp.endpoint].uas_ok, // K
-        pageTestResults[lp.endpoint].data_layers.join(','), // L
-        pageTestResults[lp.endpoint].keys_log.join(',') // M
-      ]]
-    }
-  }, (err, response) => {
-    if (err) {
-      console.log('The API returned an error inserting value of ' + lp.endpoint + ':' + err)
-    } else {
-      console.log('Success: ' + lp.endpoint)
-    }
+methods.asyncWriteSpreadsheet = function (landingpageInfo, spreadsheetConfig) {
+  return new Promise((resolve, reject) => {
+    spreadsheetConfig.sheets.spreadsheets.values.append({
+      auth: spreadsheetConfig.auth,
+      spreadsheetId: spreadsheetConfig.spreadsheetId,
+      range: 'maturity!G' + landingpageInfo.row.toString() + ':M' + landingpageInfo.row.toString(),
+      valueInputOption: 'USER_ENTERED',
+      resource: {
+        values: [[
+          pageTestResults[landingpageInfo.endpoint].gtms.join(','), // G
+          pageTestResults[landingpageInfo.endpoint].gtm_position, // H
+          pageTestResults[landingpageInfo.endpoint].checkGtmIds, // I
+          pageTestResults[landingpageInfo.endpoint].uas.join(','), // J
+          pageTestResults[landingpageInfo.endpoint].uas_ok, // K
+          pageTestResults[landingpageInfo.endpoint].data_layers.join(','), // L
+          pageTestResults[landingpageInfo.endpoint].keys_log.join(',') // M
+        ]]
+      }
+    }, (err, response) => {
+      if (err) {
+        console.log('The API returned an error inserting value of ' + landingpageInfo.endpoint + ':' + err)
+        reject(err, landingpageInfo.endpoint)
+      } else {
+        console.log('Success: ' + landingpageInfo.endpoint)
+        resolve(landingpageInfo.endpoint, response)
+      }
+    })
   })
 }
 
