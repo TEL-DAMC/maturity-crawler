@@ -70,9 +70,9 @@ gtm_position = undefined;
   if (has_gtm) {
       if (pg_html.indexOf('gtm.js?') < pg_html.indexOf('</head')) gtm_position='head';
       if (pg_html.indexOf('gtm.js?') > pg_html.indexOf('<body')) {
-          to_s = Math.abs(pg_html.indexOf('<body') - pg_html.indexOf('gtm.js?'));
-          to_e = pg_html.indexOf('</body') - pg_html.indexOf('gtm.js?');
-          if (to_e > to_s) {
+          distanceToStart = Math.abs(pg_html.indexOf('<body') - pg_html.indexOf('gtm.js?'));
+          distanceToEnd = pg_html.indexOf('</body') - pg_html.indexOf('gtm.js?');
+          if (distanceToEnd > distanceToStart) {
               gtm_position = 'body bottom';
           } else {
               gtm_position = 'body init';

@@ -1,193 +1,214 @@
-#!/usr/local/bin/node
-
 /* LIBS */
-const puppeteer = require('puppeteer');
+const puppeteer = require('puppeteer')
 
 /* VARS */
-var prop = {};
+const pageTestResults = {}
 
 /* METHODS */
-methods = {}
+const methods = {}
 
-// check arguments (useless?)
-methods.check_args = function(p_args, t_chk) {
-    var args = require('minimist')(p_args);
-    if (!(t_chk in args)) {
-      console.log('There is no env. Please use "node run.js --env example.com"');
-      process.exit();
+let globalBrowserInstance
+
+// asyncFetchAndCheck pages
+methods.asyncCheckLandingPages = async function (landingPages, googleSheetsConfig) {
+  globalBrowserInstance = await puppeteer.launch({headless: false})
+  let currentlyRunning = 0
+  ;(async function asyncLoop (i) {
+    if (currentlyRunning < 8) {
+      currentlyRunning++
+      methods.asyncFetchAndCheck(landingPages[i], googleSheetsConfig).catch(e => console.warn('asyncFetchAndCheck error:', landingPages[i], e))
+    } else {
+      await methods.asyncFetchAndCheck(landingPages[i], googleSheetsConfig).catch(e => console.warn('asyncFetchAndCheck error:', landingPages[i], e))
+      currentlyRunning = (await globalBrowserInstance.pages()).length
     }
+    i++
+    await asyncLoop(i)
+  })(0)
+
+  for (let i in landingPages) {
+    if (landingPages.hasOwnProperty(i)) {
+      pageTestResults[landingPages[i].endpoint] = {
+        endpoint: landingPages[i].endpoint,
+        gtms: [], // GTM IDs
+        gtms_ok: false,
+        uas: [], // UA Tracking IDs
+        uas_ok: false,
+        data_layers: [], // GTM dataLayer object names
+        data_layers_ok: false,
+        keys_log: [],
+        gtm_position: '-'
+      }
+    }
+  }
+}
+
+methods.asyncFetchAndCheck = async function (lp, spreadsheet) {
+  // open browser
+  const chromeBrowserInstance = globalBrowserInstance
+
+  if (!lp || !lp.endpoint) return
+  const chomeTab = await chromeBrowserInstance.newPage()
+
+  // activate the sniffer
+  chomeTab.on('response', response => {
+    let url = response.url()
+
+    if (url) {
+      // to see all network requests
+      // console.log(req.url);
+      // get gtm
+      if (url.indexOf('gtm.js') > -1) {
+        let gtmInfo = this.getGtmInfoFromUrl(url)
+
+        pageTestResults[lp.endpoint].gtms.push(gtmInfo.gtmId)
+        pageTestResults[lp.endpoint].data_layers.push(gtmInfo.dataLayerObjectName)
+      } else if (url.indexOf('/collect') > -1 && this.getUrlParamValueFromName(url, 't') === 'pageview') {
+        pageTestResults[lp.endpoint].uas.push(this.getGoogleAnalyticsTrackingId(url))
+      }
+    }
+  })
+
+  // handling error
+  chomeTab.on('error', msg => {
+    console.warn('browser error', lp.endpoint, msg)
+  })
+
+  chomeTab.on('pageerror', msg => {
+    console.warn('page js error', lp.endpoint, msg)
+  })
+
+  console.log('endpoint:', lp.endpoint)
+  await chomeTab.goto(lp.endpoint, {waitUntil: 'networkidle0'}).catch(e => {
+    console.error('error on ', lp.endpoint, ':', e.message)
+  })
+
+  // html content analysis
+  const PageHTML = await chomeTab.content()
+  console.log('html length:', PageHTML.length)
+
+  pageTestResults[lp.endpoint].gtm_position = methods.checkGtmPositionStatus(PageHTML)
+
+  console.log(pageTestResults[lp.endpoint].data_layers)
+  const PageDataLayer = await methods.asyncGetDataLayerObject(chomeTab, pageTestResults[lp.endpoint].data_layers[0])
+
+  pageTestResults[lp.endpoint].keys_log.concat(methods.filterDataLayerObjectKeysFound(lp, JSON.stringify(PageDataLayer)))
+  pageTestResults[lp.endpoint].checkGtmIds = methods.checkGtmIds(lp)
+  pageTestResults[lp.endpoint].uas_ok = methods.checkGoogleAnalyticsTackingIds(lp)
+  pageTestResults[lp.endpoint].checkDataLayerIds = methods.checkDataLayerIds(lp)
+
+  if ((await chromeBrowserInstance.pages()).length > 2) await chomeTab.close()
+
+  methods.asyncWriteSpreadsheet(lp, spreadsheet)
 }
 
 // get parameter name
-methods.get_param_name = function(name, url) {
-    name = name.replace(/[\[\]]/g, "\\$&");
-    var regex = new RegExp("[?&]" + name + "(=([^&#]*)|&|#|$)"),
-        results = regex.exec(url);
-    if (!results) return null;
-    if (!results[2]) return '';
-    return decodeURIComponent(results[2].replace(/\+/g, " "));
+methods.getUrlParamValueFromName = function (url, name) {
+  name = name.replace(/[[\]]/g, '\\$&')
+  let regex = new RegExp('[?&]' + name + '(=([^&#]*)|&|#|$)')
+  let results = regex.exec(url)
+  if (!results) return null
+  if (!results[2]) return ''
+  return decodeURIComponent(results[2].replace(/\+/g, ' '))
 }
 
-// fetch pages
-methods.get_lps = function(lps, sc){
-    for (var i in lps) {
-        prop[lps[i].endpoint] = {
-            endpoint: lps[i].endpoint,
-            gtms: [],
-            gtms_ok: false,
-            uas: [],
-            uas_ok: false,
-            data_layers: [],
-            data_layers_ok: false,
-            keys_log: [],
-            gtm_position: '-'
-        };
-        this.fetch(lps[i], sc).then(function(){
-            console.log(JSON.stringify(prop));
-        }).catch(function(e){
-            console.log(e);
-        });
-    }
+methods.asyncGetDataLayerObject = async function (chromeTab, dataLayerName) {
+  return chromeTab.evaluate((GtmDataLayerName) => {
+    return window[GtmDataLayerName]
+  }, dataLayerName)
 }
 
-methods.fetch = async function(lp, sc) {
-    // open browser
-    const browser = await puppeteer.launch();
-    const page = await browser.newPage();
-
-    // activate the sniffer
-    page.on('response', response => {
-        req = response.request();
-
-        if (req.hasOwnProperty('url')) {
-            // to see all network requests
-            // console.log(req.url);
-
-            // get gtm
-            if (req.url.indexOf('gtm.js') > -1) {
-                this.check_gtm(req.url, lp);
-            }
-
-            // get GA
-            if (req.url.indexOf('/collect') > -1) {
-                if (this.get_param_name('t', req.url) == 'pageview') {
-                    this.check_ua(req.url, lp);
-                }
-            }
-        }
-    });
-
-    // handling error
-    page.on('error', msg => { browser.close(); });
-    page.on('pageerror', msg => { browser.close(); });
-
-    // go to env
-    const rsp = await page.goto(lp.endpoint, {waitUntil: 'networkidle0'});
-
-    // html content analysis
-    pg_html = await page.content();
-    this.check_gtm_position(lp, pg_html);
-
-    // check DataLayer
-    pg_data_layer = await page.evaluate((gtm_dl) => window[gtm_dl], (prop[lp.endpoint].data_layers[0]));
-    this.check_keys(lp, JSON.stringify(pg_data_layer));
-
-    await browser.close();
-
-    this.gtms_ok(lp);
-    this.uas_ok(lp);
-    this.data_layers_ok(lp);
-
-    this.write_sheet(lp, sc);
+/**
+ * Returns GTM's dataLayer name and id from its url
+ * @param gtmUrl GTM js URL
+ * @returns {{dataLayerObjectName: string, gtmId: string}}
+ */
+methods.getGtmInfoFromUrl = function (gtmUrl) {
+  return {
+    dataLayerObjectName: methods.getUrlParamValueFromName(gtmUrl, 'l'),
+    gtmId: methods.getUrlParamValueFromName(gtmUrl, 'id')
+  }
 }
 
-methods.check_gtm = function(url, lp) {
-    prop[lp.endpoint].gtms.push(this.get_param_name('id', url));
-    prop[lp.endpoint].data_layers.push(this.get_param_name('l', url));
+/**
+ * Returns Google Analytics Tracking ID from the url
+ * @param ganalyticsUrl
+ * @returns {string} Tracking Id
+ */
+methods.getGoogleAnalyticsTrackingId = function (ganalyticsUrl) {
+  return this.getUrlParamValueFromName(ganalyticsUrl, 'tid')
 }
 
-methods.check_ua = function(url, lp) {
-    prop[lp.endpoint].uas.push(this.get_param_name('tid', url));
-}
+methods.checkGtmPositionStatus = function (pageHtml) {
+  let gtmPositionStatus
 
-methods.check_gtm_position = function(lp, pg_html) {
-    pg_gtm = pg_html.indexOf('gtm.js?');
+  const gtmPositionIndexOnPage = pageHtml.indexOf('gtm.js?') // TODO: Check more than one GTM on the same page
 
-    if (pg_gtm > -1) {
-        if (pg_gtm < pg_html.indexOf('</head')) prop[lp.endpoint].gtm_position = 'header';
-        if (pg_gtm > pg_html.indexOf('<body')) {
-            to_s = Math.abs(pg_html.indexOf('<body') - pg_gtm);
-            to_e = pg_html.indexOf('</body') - pg_gtm;
-            if (to_s > to_e) {
-                prop[lp.endpoint].gtm_position = 'body bottom';
-            } else {
-                prop[lp.endpoint].gtm_position = 'body init';
-            }
-        }
-    }
-}
-
-methods.gtms_ok = function(lp) {
-    // check gtms
-    if (lp.gtms.sort().join(',') == prop[lp.endpoint].gtms.sort().join(',')) {
-        prop[lp.endpoint].gtms_ok = true;
+  if (gtmPositionIndexOnPage === -1) {
+    gtmPositionStatus = 'not found'
+  } else if (gtmPositionIndexOnPage < pageHtml.indexOf('</head')) {
+    gtmPositionStatus = 'header'
+  } else if (gtmPositionIndexOnPage > pageHtml.indexOf('<body')) {
+    const distanceToStart = Math.abs(pageHtml.indexOf('<body') - gtmPositionIndexOnPage)
+    const distanceToEnd = pageHtml.indexOf('</body') - gtmPositionIndexOnPage
+    if (distanceToStart > distanceToEnd) {
+      gtmPositionStatus = 'body bottom'
     } else {
-        prop[lp.endpoint].gtms_ok = false;
+      gtmPositionStatus = 'body init'
     }
+  }
+  return gtmPositionStatus
 }
 
-methods.uas_ok = function(lp) {
-    // check uas
-    if (lp.uas.sort().join(',') == prop[lp.endpoint].uas.sort().join(',')) {
-        prop[lp.endpoint].uas_ok = true;
-    } else {
-        prop[lp.endpoint].uas_ok = false;
-    }
+methods.checkGtmIds = function (lp) {
+  // check gtms
+  return lp.gtms.sort().join(',') === pageTestResults[lp.endpoint].gtms.sort().join(',')
 }
 
-methods.data_layers_ok = function(lp) {
-    // check data_layers
-    if (lp.data_layers.sort().join(',') == prop[lp.endpoint].data_layers.sort().join(',')) {
-        prop[lp.endpoint].data_layers_ok = true;
-    } else {
-        prop[lp.endpoint].data_layers_ok = false;
-    }
+methods.checkGoogleAnalyticsTackingIds = function (lp) {
+  // check uas
+  return lp.uas.sort().join(',') === pageTestResults[lp.endpoint].uas.sort().join(',')
 }
 
-methods.check_keys = function(lp, json) {
-    for (k of lp.keys) {
-        if (json.indexOf(k) < 0) {
-            prop[lp.endpoint].keys_log.push(k);
-        }
-    }
+methods.checkDataLayerIds = function (lp) {
+  // check expected data_layers vs what was found
+  return lp.data_layers.sort().join(',') === pageTestResults[lp.endpoint].data_layers.sort().join(',')
 }
 
-methods.write_sheet = function(lp, sc) {
-  sc.sheets.spreadsheets.values.append({
-      auth: sc.auth,
-      spreadsheetId: sc.spreadsheet_id,
-      range: 'maturity!G' + lp.row.toString() + ':M'+ lp.row.toString(),
+methods.filterDataLayerObjectKeysFound = function (lp, json) {
+  if (!json) return []
+  // todo: dangerous implementation of key check on stringified JSON
+  return lp.keys.filter(key => json.indexOf(key) < 0)
+}
+
+methods.asyncWriteSpreadsheet = function (landingpageInfo, spreadsheetConfig) {
+  return new Promise((resolve, reject) => {
+    spreadsheetConfig.sheets.spreadsheets.values.append({
+      auth: spreadsheetConfig.auth,
+      spreadsheetId: spreadsheetConfig.spreadsheetId,
+      range: 'maturity!G' + landingpageInfo.row.toString() + ':M' + landingpageInfo.row.toString(),
       valueInputOption: 'USER_ENTERED',
       resource: {
-        values: [ [
-              prop[lp.endpoint].gtms.join(','), // G
-              prop[lp.endpoint].gtm_position, // H
-              prop[lp.endpoint].gtms_ok, // I
-              prop[lp.endpoint].uas.join(','), // J
-              prop[lp.endpoint].uas_ok, // K
-              prop[lp.endpoint].data_layers.join(','), // L
-              prop[lp.endpoint].keys_log.join(',') // M
-              ] ]
+        values: [[
+          pageTestResults[landingpageInfo.endpoint].gtms.join(','), // G
+          pageTestResults[landingpageInfo.endpoint].gtm_position, // H
+          pageTestResults[landingpageInfo.endpoint].checkGtmIds, // I
+          pageTestResults[landingpageInfo.endpoint].uas.join(','), // J
+          pageTestResults[landingpageInfo.endpoint].uas_ok, // K
+          pageTestResults[landingpageInfo.endpoint].data_layers.join(','), // L
+          pageTestResults[landingpageInfo.endpoint].keys_log.join(',') // M
+        ]]
       }
     }, (err, response) => {
       if (err) {
-        console.log('The API returned an error inserting value of ' + lp.endpoint + ':'+ err);
-        return;
+        console.log('The API returned an error inserting value of ' + landingpageInfo.endpoint + ':' + err)
+        reject(err, landingpageInfo.endpoint)
       } else {
-          console.log('Success: ' + lp.endpoint);
+        console.log('Success: ' + landingpageInfo.endpoint)
+        resolve(landingpageInfo.endpoint, response)
       }
-  });
+    })
+  })
 }
 
 // export methods
-module.exports = methods;
+module.exports = methods
