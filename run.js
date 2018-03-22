@@ -29,7 +29,7 @@ GoogleSheetsConfig.auth = JwtClient
 
 ;(async (gsc) => {
   // clear
-  await GoogleSheets.clearRange('maturity!G2:M', gsc)
+  await GoogleSheets.clearRange('maturity!H2:N', gsc)
   const landingPagesConfigInfo = await GoogleSheets.readLandingPagesConfigInfo(gsc)
   await GlobalMethods.asyncCheckLandingPages(landingPagesConfigInfo, gsc)
 })(GoogleSheetsConfig)
