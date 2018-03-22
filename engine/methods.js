@@ -1,5 +1,6 @@
 /* LIBS */
 const puppeteer = require('puppeteer')
+const URLLib = require('url').URL
 
 /* VARS */
 const pageTestResults = {}
@@ -12,15 +13,8 @@ let globalBrowserInstance
 // asyncFetchAndCheck pages
 methods.asyncCheckLandingPages = async function (landingPages, googleSheetsConfig) {
   globalBrowserInstance = await puppeteer.launch({headless: false})
-  let currentlyRunning = 0
   ;(async function asyncLoop (i) {
-    if (currentlyRunning < 8) {
-      currentlyRunning++
-      methods.asyncFetchAndCheck(landingPages[i], googleSheetsConfig).catch(e => console.warn('asyncFetchAndCheck error:', landingPages[i], e))
-    } else {
-      await methods.asyncFetchAndCheck(landingPages[i], googleSheetsConfig).catch(e => console.warn('asyncFetchAndCheck error:', landingPages[i], e))
-      currentlyRunning = (await globalBrowserInstance.pages()).length
-    }
+    await methods.asyncFetchAndCheck(landingPages[i], googleSheetsConfig, globalBrowserInstance).catch(e => console.warn('asyncFetchAndCheck error:', landingPages[i], e))
     i++
     await asyncLoop(i)
   })(0)
@@ -42,12 +36,30 @@ methods.asyncCheckLandingPages = async function (landingPages, googleSheetsConfi
   }
 }
 
-methods.asyncFetchAndCheck = async function (lp, spreadsheet) {
+methods.asyncFetchAndCheck = async function (lp, spreadsheet, globalBrowserInstance) {
   // open browser
   const chromeBrowserInstance = globalBrowserInstance
 
   if (!lp || !lp.endpoint) return
   const chomeTab = await chromeBrowserInstance.newPage()
+
+  if (lp.cookies.length) {
+    console.log('hey,', lp.endpoint, '! we have cookies for you!')
+    await chomeTab.goto(lp.endpoint, {waitUntil: 'networkidle2'})
+
+    console.log('hey,', lp.endpoint, '! let us set some cookies!')
+    lp.cookies.forEach(async cookieString => {
+      if (!cookieString) return
+      let cookieArray = cookieString.split('=')
+      console.log(cookieArray)
+      await chomeTab.setCookie({
+        name: cookieArray[0],
+        value: cookieArray[1],
+        path: '/',
+        domain: (new URLLib(lp.endpoint)).hostname
+      })
+    })
+  }
 
   // activate the sniffer
   chomeTab.on('response', response => {
@@ -77,10 +89,11 @@ methods.asyncFetchAndCheck = async function (lp, spreadsheet) {
     console.warn('page js error', lp.endpoint, msg)
   })
 
-  console.log('endpoint:', lp.endpoint)
+  console.log('going to endpoint:', lp.endpoint)
   await chomeTab.goto(lp.endpoint, {waitUntil: 'networkidle0'}).catch(e => {
     console.error('error on ', lp.endpoint, ':', e.message)
   })
+  console.log('passou')
 
   // html content analysis
   const PageHTML = await chomeTab.content()
@@ -88,7 +101,6 @@ methods.asyncFetchAndCheck = async function (lp, spreadsheet) {
 
   pageTestResults[lp.endpoint].gtm_position = methods.checkGtmPositionStatus(PageHTML)
 
-  console.log(pageTestResults[lp.endpoint].data_layers)
   const PageDataLayer = await methods.asyncGetDataLayerObject(chomeTab, pageTestResults[lp.endpoint].data_layers[0])
 
   pageTestResults[lp.endpoint].keys_log.concat(methods.filterDataLayerObjectKeysFound(lp, JSON.stringify(PageDataLayer)))
@@ -96,7 +108,7 @@ methods.asyncFetchAndCheck = async function (lp, spreadsheet) {
   pageTestResults[lp.endpoint].uas_ok = methods.checkGoogleAnalyticsTackingIds(lp)
   pageTestResults[lp.endpoint].checkDataLayerIds = methods.checkDataLayerIds(lp)
 
-  if ((await chromeBrowserInstance.pages()).length > 2) await chomeTab.close()
+  await chomeTab.close()
 
   methods.asyncWriteSpreadsheet(lp, spreadsheet)
 }
@@ -160,17 +172,14 @@ methods.checkGtmPositionStatus = function (pageHtml) {
 }
 
 methods.checkGtmIds = function (lp) {
-  // check gtms
   return lp.gtms.sort().join(',') === pageTestResults[lp.endpoint].gtms.sort().join(',')
 }
 
 methods.checkGoogleAnalyticsTackingIds = function (lp) {
-  // check uas
   return lp.uas.sort().join(',') === pageTestResults[lp.endpoint].uas.sort().join(',')
 }
 
 methods.checkDataLayerIds = function (lp) {
-  // check expected data_layers vs what was found
   return lp.data_layers.sort().join(',') === pageTestResults[lp.endpoint].data_layers.sort().join(',')
 }
 
@@ -185,17 +194,17 @@ methods.asyncWriteSpreadsheet = function (landingpageInfo, spreadsheetConfig) {
     spreadsheetConfig.sheets.spreadsheets.values.append({
       auth: spreadsheetConfig.auth,
       spreadsheetId: spreadsheetConfig.spreadsheetId,
-      range: 'maturity!G' + landingpageInfo.row.toString() + ':M' + landingpageInfo.row.toString(),
+      range: 'maturity!H' + landingpageInfo.row.toString() + ':N' + landingpageInfo.row.toString(),
       valueInputOption: 'USER_ENTERED',
       resource: {
         values: [[
-          pageTestResults[landingpageInfo.endpoint].gtms.join(','), // G
-          pageTestResults[landingpageInfo.endpoint].gtm_position, // H
-          pageTestResults[landingpageInfo.endpoint].checkGtmIds, // I
-          pageTestResults[landingpageInfo.endpoint].uas.join(','), // J
-          pageTestResults[landingpageInfo.endpoint].uas_ok, // K
-          pageTestResults[landingpageInfo.endpoint].data_layers.join(','), // L
-          pageTestResults[landingpageInfo.endpoint].keys_log.join(',') // M
+          pageTestResults[landingpageInfo.endpoint].gtms.join(','),
+          pageTestResults[landingpageInfo.endpoint].gtm_position,
+          pageTestResults[landingpageInfo.endpoint].checkGtmIds,
+          pageTestResults[landingpageInfo.endpoint].uas.join(','),
+          pageTestResults[landingpageInfo.endpoint].uas_ok,
+          pageTestResults[landingpageInfo.endpoint].data_layers.join(','),
+          pageTestResults[landingpageInfo.endpoint].keys_log.join(',')
         ]]
       }
     }, (err, response) => {

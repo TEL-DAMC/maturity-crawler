@@ -21,7 +21,7 @@ const GoogleSheets = {
       GoogleSheetsConfig.sheets.spreadsheets.values.get({
         auth: GoogleSheetsConfig.auth,
         spreadsheetId: GoogleSheetsConfig.spreadsheetId,
-        range: 'maturity!B2:F'
+        range: 'maturity!B2:G'
       }, function (err, response) {
         if (err) {
           console.log('The API returned an error retrieving infos: ' + err)
@@ -33,7 +33,8 @@ const GoogleSheets = {
             gtms: row[1].split(','),
             uas: row[2].split(','),
             data_layers: row[3].split(','),
-            keys: row[4].split(',')
+            keys: row[4] ? row[4].split(',') : [],
+            cookies: row[5] ? row[5].split(';') : []
           }))
           console.log('List URLs:')
           lps.forEach(lp => console.log(lp.endpoint))
