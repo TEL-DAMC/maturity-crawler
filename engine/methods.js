@@ -2,6 +2,7 @@
 const puppeteer = require('puppeteer')
 const URLLib = require('url').URL
 const pMap = require('p-map')
+const pRetry = require('p-retry')
 
 /* VARS */
 const pageTestResults = {}
@@ -35,8 +36,11 @@ methods.asyncCheckLandingPages = async function (landingPages, googleSheetsConfi
 
   prepareResultsObject(landingPages)
 
-  const mapper = lp => methods.asyncFetchAndCheck(lp, googleSheetsConfig, globalBrowserInstance)
-    .catch(e => console.warn('asyncFetchAndCheck error:', lp, e))
+  const mapper = lp => pRetry(() => {
+    return methods.asyncFetchAndCheck(lp, googleSheetsConfig, globalBrowserInstance)
+      .catch(e => console.warn('asyncFetchAndCheck error:', lp, e))
+  })
+
   await pMap(landingPages, mapper, {concurrency: 5})
 
   globalBrowserInstance.close()
@@ -81,6 +85,7 @@ methods.asyncFetchAndCheck = async function (lp, spreadsheet, globalBrowserInsta
         pageTestResults[lp.endpoint].gtms.push(gtmInfo.gtmId)
         pageTestResults[lp.endpoint].data_layers.push(gtmInfo.dataLayerObjectName)
       } else if (url.indexOf('/collect') > -1 && this.getUrlParamValueFromName(url, 't') === 'pageview') {
+        console.log('ga', lp.endpoint, url)
         pageTestResults[lp.endpoint].uas.push(this.getGoogleAnalyticsTrackingId(url))
       }
     }
