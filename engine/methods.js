@@ -1,6 +1,7 @@
 /* LIBS */
 const puppeteer = require('puppeteer')
 const URLLib = require('url').URL
+const pMap = require('p-map')
 
 /* VARS */
 const pageTestResults = {}
@@ -10,15 +11,7 @@ const methods = {}
 
 let globalBrowserInstance
 
-// asyncFetchAndCheck pages
-methods.asyncCheckLandingPages = async function (landingPages, googleSheetsConfig) {
-  globalBrowserInstance = await puppeteer.launch({headless: false})
-  ;(async function asyncLoop (i) {
-    await methods.asyncFetchAndCheck(landingPages[i], googleSheetsConfig, globalBrowserInstance).catch(e => console.warn('asyncFetchAndCheck error:', landingPages[i], e))
-    i++
-    await asyncLoop(i)
-  })(0)
-
+function prepareResultsObject (landingPages) {
   for (let i in landingPages) {
     if (landingPages.hasOwnProperty(i)) {
       pageTestResults[landingPages[i].endpoint] = {
@@ -34,6 +27,19 @@ methods.asyncCheckLandingPages = async function (landingPages, googleSheetsConfi
       }
     }
   }
+}
+
+// asyncFetchAndCheck pages
+methods.asyncCheckLandingPages = async function (landingPages, googleSheetsConfig) {
+  globalBrowserInstance = await puppeteer.launch({headless: false})
+
+  prepareResultsObject(landingPages)
+
+  const mapper = lp => methods.asyncFetchAndCheck(lp, googleSheetsConfig, globalBrowserInstance)
+    .catch(e => console.warn('asyncFetchAndCheck error:', lp, e))
+  await pMap(landingPages, mapper, {concurrency: 5})
+
+  globalBrowserInstance.close()
 }
 
 methods.asyncFetchAndCheck = async function (lp, spreadsheet, globalBrowserInstance) {
